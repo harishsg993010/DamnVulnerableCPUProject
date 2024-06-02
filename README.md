@@ -12,6 +12,8 @@ Stack management with call and return instructions
 Interrupt handling and privileged mode execution
 I/O port support
 
+## Screenshot
+
 [![Screenshot-2024-04-28-200142.png](https://i.postimg.cc/L41T2g78/Screenshot-2024-04-28-200142.png)](https://postimg.cc/23Cvxyrs)
 
 ## Disclaimer
