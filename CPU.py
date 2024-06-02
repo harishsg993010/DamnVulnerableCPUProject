@@ -167,6 +167,14 @@ class CPU:
         self.pc = self.interrupt_vector[interrupt_num]
         # Enter privileged mode
         self.privileged_mode = True
+        
+    def run(self):
+        while self.pc < len(self.physical_memory):
+            instruction = self.fetch()
+            self.execute(instruction)
+            # Vulnerability 3 (High Impact): Buffer overflow
+            if self.pc >= len(self.physical_memory):
+                break
 
     def clear_memory(self):
         self.memory = [0] * 1024
