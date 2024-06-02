@@ -1,9 +1,31 @@
 import random
 
+class PageTableEntry:
+    def __init__(self, physical_page, permissions):
+        self.physical_page = physical_page
+        self.permissions = permissions
+
+    def set_permissions(self, permissions):
+        # Vulnerability 1 (Low Impact): Insufficient permission validation
+        self.permissions = permissions
+
+class PageTable:
+    def __init__(self, num_entries):
+        self.entries = [None] * num_entries
+
+    def add_entry(self, virtual_page, physical_page, permissions):
+        # Vulnerability: Allow adding entries beyond the valid range
+        self.entries[virtual_page] = PageTableEntry(physical_page, permissions)
+
+    def get_entry(self, virtual_page):
+        # Vulnerability: Allow accessing entries beyond the valid range
+        return self.entries[virtual_page]
+
 class CPU:
     def __init__(self):
-        self.registers = [0] * 8
-        self.memory = [0] * 1024
+        self.registers = [0] * 16
+        self.physical_memory = [0] * 2048
+        self.page_table = PageTable(256)  # 256 entries in the page table
         self.pc = 0
         self.stack = []
         self.branch_predictor = [0] * 256
@@ -13,24 +35,37 @@ class CPU:
         self.privileged_mode = False
         self.instruction_count = 0
         self.stack_depth_limit = 10
-        self.memory_protection = [False] * 1024
+        self.interrupt_vector = [0] * 256
+        self.io_ports = [0] * 256
+
+    def map_page(self, virtual_page, physical_page, permissions):
+        # Vulnerability: Allow mapping pages beyond the valid range
+        self.page_table.add_entry(virtual_page, physical_page, permissions)
+
+    def translate_address(self, virtual_address, access_type):
+        virtual_page = virtual_address // 256
+        offset = virtual_address % 256
+        page_entry = self.page_table.get_entry(virtual_page)
+        if page_entry is None:
+            raise Exception("Page fault")
+        if access_type not in page_entry.permissions:
+            raise Exception("Page protection fault")
+        physical_address = page_entry.physical_page * 256 + offset
+        return physical_address
 
     def load_program(self, program):
         for i, instruction in enumerate(program):
-            if 0 <= i < len(self.memory) and not self.memory_protection[i]:
-                self.memory[i] = instruction
-            else:
-                print(f"Invalid memory address or memory protection violation: {i}")
+            virtual_address = i
+            physical_address = self.translate_address(virtual_address, 'w')
+            self.physical_memory[physical_address] = instruction
 
     def fetch(self):
-        if 0 <= self.pc < len(self.memory) and not self.memory_protection[self.pc]:
-            instruction = self.memory[self.pc]
-            self.pc += 1
-            self.instruction_count += 1
-            return instruction
-        else:
-            print(f"Invalid PC value or memory protection violation: {self.pc}")
-            return 0
+        virtual_address = self.pc
+        physical_address = self.translate_address(virtual_address, 'x')
+        instruction = self.physical_memory[physical_address]
+        self.pc += 1
+        self.instruction_count += 1
+        return instruction
 
     def execute(self, instruction):
         opcode = instruction >> 24
@@ -39,15 +74,13 @@ class CPU:
         operand3 = instruction & 0xFF
 
         if opcode == 0x01:  # LOAD
-            if 0 <= self.registers[operand2] < len(self.memory) and not self.memory_protection[self.registers[operand2]]:
-                self.registers[operand1] = self.memory[self.registers[operand2]]
-            else:
-                print(f"Invalid memory address or memory protection violation: {self.registers[operand2]}")
+            virtual_address = self.registers[operand2]
+            physical_address = self.translate_address(virtual_address, 'r')
+            self.registers[operand1] = self.physical_memory[physical_address]
         elif opcode == 0x02:  # STORE
-            if 0 <= self.registers[operand2] < len(self.memory) and not self.memory_protection[self.registers[operand2]]:
-                self.memory[self.registers[operand2]] = self.registers[operand1]
-            else:
-                print(f"Invalid memory address or memory protection violation: {self.registers[operand2]}")
+            virtual_address = self.registers[operand2]
+            physical_address = self.translate_address(virtual_address, 'w')
+            self.physical_memory[physical_address] = self.registers[operand1]
         elif opcode == 0x03:  # ADD
             self.registers[operand1] += self.registers[operand2]
         elif opcode == 0x04:  # SUB
@@ -60,22 +93,19 @@ class CPU:
             else:
                 print("Division by zero!")
         elif opcode == 0x07:  # JUMP
-            if 0 <= self.registers[operand1] < len(self.memory) and not self.memory_protection[self.registers[operand1]]:
-                self.btb[self.pc % 256] = self.pc
-                self.pc = self.registers[operand1]
-            else:
-                print(f"Invalid jump address or memory protection violation: {self.registers[operand1]}")
+            virtual_address = self.registers[operand1]
+            physical_address = self.translate_address(virtual_address, 'x')
+            self.btb[self.pc % 256] = self.pc
+            self.pc = physical_address
         elif opcode == 0x08:  # JUMP_IF_ZERO
             if self.branch_predictor[self.pc % 256] == 1:
-                if 0 <= self.registers[operand2] < len(self.memory) and not self.memory_protection[self.registers[operand2]]:
-                    self.pc = self.registers[operand2]  # Speculative execution
-                else:
-                    print(f"Invalid jump address or memory protection violation: {self.registers[operand2]}")
+                virtual_address = self.registers[operand2]
+                physical_address = self.translate_address(virtual_address, 'x')
+                self.pc = physical_address  # Speculative execution
             if self.registers[operand1] == 0:
-                if 0 <= self.registers[operand2] < len(self.memory) and not self.memory_protection[self.registers[operand2]]:
-                    self.pc = self.registers[operand2]
-                else:
-                    print(f"Invalid jump address or memory protection violation: {self.registers[operand2]}")
+                virtual_address = self.registers[operand2]
+                physical_address = self.translate_address(virtual_address, 'x')
+                self.pc = physical_address
             else:
                 self.branch_predictor[self.pc % 256] = 0
         elif opcode == 0x09:  # PUSH
@@ -92,10 +122,9 @@ class CPU:
             if len(self.stack) < self.stack_depth_limit:
                 self.ras.append(self.pc)
                 self.stack.append(self.pc)
-                if 0 <= self.registers[operand1] < len(self.memory) and not self.memory_protection[self.registers[operand1]]:
-                    self.pc = self.registers[operand1]
-                else:
-                    print(f"Invalid call address or memory protection violation: {self.registers[operand1]}")
+                virtual_address = self.registers[operand1]
+                physical_address = self.translate_address(virtual_address, 'x')
+                self.pc = physical_address
             else:
                 print("Stack overflow!")
         elif opcode == 0x0C:  # RET
@@ -112,35 +141,48 @@ class CPU:
                 else:
                     print(f"Invalid register: {operand2}")
             elif operand1 == 0x02:  # PRINT_MEM
-                if 0 <= operand2 < len(self.memory) and not self.memory_protection[operand2]:
-                    print(f"Memory {operand2}: {self.memory[operand2]}")
-                else:
-                    print(f"Invalid memory address or memory protection violation: {operand2}")
+                virtual_address = operand2
+                physical_address = self.translate_address(virtual_address, 'r')
+                print(f"Memory {virtual_address}: {self.physical_memory[physical_address]}")
         elif opcode == 0x0E:  # CACHE_READ
-            if 0 <= self.registers[operand2] < len(self.memory) and not self.memory_protection[self.registers[operand2]]:
-                self.cache[operand1] = self.memory[self.registers[operand2]]
-            else:
-                print(f"Invalid memory address or memory protection violation: {self.registers[operand2]}")
+            virtual_address = self.registers[operand2]
+            physical_address = self.translate_address(virtual_address, 'r')
+            self.cache[operand1] = self.physical_memory[physical_address]
         elif opcode == 0x0F:  # CACHE_WRITE
-            if 0 <= self.registers[operand2] < len(self.memory) and not self.memory_protection[self.registers[operand2]]:
-                self.memory[self.registers[operand2]] = self.cache[operand1]
-            else:
-                print(f"Invalid memory address or memory protection violation: {self.registers[operand2]}")
+            virtual_address = self.registers[operand2]
+            physical_address = self.translate_address(virtual_address, 'w')
+            self.physical_memory[physical_address] = self.cache[operand1]
         elif opcode == 0x10:  # PRIVILEGED
-            if not self.privileged_mode:
-                raise Exception("Privileged instruction executed in user mode")
+            # Vulnerability 2 (Low Impact): Insufficient privileged mode check
+            pass
         elif opcode == 0x11:  # ENTER_PRIVILEGED
             self.privileged_mode = True
         elif opcode == 0x12:  # EXIT_PRIVILEGED
             self.privileged_mode = False
+        elif opcode == 0x13:  # IN
+            self.registers[operand1] = self.io_ports[operand2]
+        elif opcode == 0x14:  # OUT
+            self.io_ports[operand2] = self.registers[operand1]
+        elif opcode == 0x15:  # INT
+            self.handle_interrupt(operand1)
         else:
             raise ValueError("Invalid opcode")
 
+    def handle_interrupt(self, interrupt_num):
+        # Save the current PC to the stack
+        self.stack.append(self.pc)
+        # Set the PC to the interrupt handler address
+        self.pc = self.interrupt_vector[interrupt_num]
+        # Enter privileged mode
+        self.privileged_mode = True
+
     def run(self):
-        while self.pc < len(self.memory) and self.instruction_count < 100:
+        while self.pc < len(self.physical_memory):
             instruction = self.fetch()
             self.execute(instruction)
-
+            # Vulnerability 3 (High Impact): Buffer overflow
+            if self.pc >= len(self.physical_memory):
+                break
 
 class CPUFuzzer:
     def __init__(self, cpu):
@@ -180,6 +222,15 @@ class CPUFuzzer:
 
 def main():
     cpu = CPU()
+
+    # Map virtual pages to physical pages with permissions
+    cpu.map_page(0, 0, 'rwx')
+    cpu.map_page(1, 1, 'r')
+    cpu.map_page(2, 2, 'rx')
+
+    # Exploit: Map a page beyond the valid range
+    cpu.map_page(1000, 1000, 'rwx')
+
     fuzzer = CPUFuzzer(cpu)
     fuzzer.run_fuzzer()
 
